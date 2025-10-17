@@ -1,4 +1,5 @@
 # Use newer Ubuntu base (Jammy = 22.04 LTS)
+# NOTE: This is Ubuntu 22.04 (Jammy), which is a better choice than 20.04 (Focal)
 FROM ubuntu:jammy
 
 ARG FFMPEG_VERSION=4.2.2
@@ -8,6 +9,7 @@ WORKDIR /usr/src/app
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
+# Ensure gnupg, wget, curl, unzip are included in this initial install block
 RUN apt-get update && apt-get install -y \
     software-properties-common \
     python3-pip python3-dev \
@@ -32,21 +34,38 @@ COPY py_requirements.txt ./
 RUN pip install --no-cache-dir -r py_requirements.txt
 
 # -----------------------------
-# ✅ Install Google Chrome + Chromedriver (safe modern approach)
+# ✅ Install Google Chrome + Chromedriver (ROBUST MODERN APPROACH)
 # -----------------------------
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
-    > /etc/apt/sources.list.d/google.list && \
+RUN set -x; \
+    # 1. Ensure /etc/apt/keyrings exists
+    mkdir -p /etc/apt/keyrings; \
+    \
+    # 2. Download the key and save it to the modern keyrings location
+    wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | \
+    gpg --dearmor -o /etc/apt/keyrings/google-chrome-archive-keyring.gpg; \
+    \
+    # 3. Add the repository definition, explicitly pointing to the new key file
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome-archive-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+    > /etc/apt/sources.list.d/google-chrome.list; \
+    \
+    # 4. Update and install Chrome
     apt-get update && \
-    apt-get install -y google-chrome-stable && \
+    apt-get install -y google-chrome-stable; \
+    \
+    # 5. Install ChromeDriver
     CHROMEVER=$(google-chrome --version | grep -oE "[0-9.]+") && \
     CHROMEMAJOR=$(echo $CHROMEVER | cut -d. -f1) && \
     DRIVERVER=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROMEMAJOR}") && \
+    \
+    # 6. Download, unzip, and clean up ChromeDriver
     wget -q --continue "https://chromedriver.storage.googleapis.com/${DRIVERVER}/chromedriver_linux64.zip" && \
     unzip chromedriver_linux64.zip -d /usr/local/bin/ && \
     chmod +x /usr/local/bin/chromedriver && \
-    rm -f chromedriver_linux64.zip && \
+    rm -f chromedriver_linux64.zip; \
+    \
+    # 7. Final cleanup
     apt-get clean && rm -rf /var/lib/apt/lists/*
+# -----------------------------
 
 # -----------------------------
 # Environment
