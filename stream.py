@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import sys, argparse, time, subprocess, shlex, logging, os, re
+import sys, argparse, time, subprocess, shlex, logging, os, re, threading, json
 
 from bigbluebutton_api_python import BigBlueButton, exception
 from bigbluebutton_api_python import util as bbbUtil 
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.keys import Keys  
 from selenium.common.exceptions import JavascriptException
 from selenium.common.exceptions import NoSuchElementException
@@ -22,7 +23,19 @@ browser = None
 selenium_timeout = 30
 connect_timeout = 5
 
-logging.basicConfig(level=os.environ.get('LOGLEVEL', 'INFO' if not os.environ.get('DEBUG') else 'DEBUG'))
+# Configure logging to console and file
+log_level = os.environ.get('LOGLEVEL', 'INFO' if not os.environ.get('DEBUG') else 'DEBUG')
+logging.basicConfig(level=log_level)
+LOG_DIR = os.environ.get('BBB_LOG_DIR', os.path.join(os.getcwd(), 'logs'))
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except PermissionError:
+    # Fallback to a writable tmp location if current user cannot create logs
+    LOG_DIR = '/tmp/logs'
+    os.makedirs(LOG_DIR, exist_ok=True)
+_fh = logging.FileHandler(os.path.join(LOG_DIR, 'app.log'))
+_fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+logging.getLogger().addHandler(_fh)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-s","--server", help="Big Blue Button Server URL")
@@ -39,6 +52,7 @@ parser.add_argument("-M","--moderatorPassword", help="moderator password (requir
 parser.add_argument("-T","--meetingTitle", help="meeting title (required to create a meeting)")
 parser.add_argument("-u","--user", help="Name to join the meeting",default="Live")
 parser.add_argument("-t","--target", help="RTMP Streaming URL")
+parser.add_argument("--browser", help="Browser to use: chrome or firefox", default=os.environ.get('BROWSER', 'chrome'))
 parser.add_argument("--chatUrl", help="Streaming URL to display in the chat", default=False)
 parser.add_argument("--chatMsg", nargs='+', help="Message to display in the chat before Streaming URL", default=False)
 parser.add_argument("-c","--chat", help="Show the chat",action="store_true")
@@ -93,16 +107,47 @@ def set_up():
 
     assert re.fullmatch(r'\d+x\d+', args.resolution)
 
-    options = Options()  
-    options.add_argument('--disable-infobars') 
-    options.add_argument('--no-sandbox') 
-    options.add_argument('--kiosk') 
-    options.add_argument('--window-size=%s' % args.resolution.replace('x', ','))
-    options.add_argument('--window-position=0,0')
-    options.add_experimental_option("excludeSwitches", ['enable-automation'])
-    options.add_experimental_option('prefs', {'intl.accept_languages':'{locale}'.format(locale='en_US.UTF-8')})
-    options.add_argument('--start-fullscreen') 
-    options.add_argument('--autoplay-policy=no-user-gesture-required')
+    browser_choice = (args.browser or 'chrome').lower()
+    if browser_choice == 'firefox':
+        from selenium.webdriver.firefox.options import Options as FirefoxOptions
+        from selenium.webdriver.firefox.service import Service as FirefoxService
+        options = FirefoxOptions()
+        options.set_preference('intl.accept_languages', 'en-US,en')
+        options.set_preference('security.certerrors.permanentOverride', True)
+        options.set_preference('security.enterprise_roots.enabled', True)
+        options.set_preference('security.mixed_content.block_active_content', False)
+        options.set_capability('acceptInsecureCerts', True)
+        options.add_argument('--kiosk')
+        options.add_argument(f'--width={args.resolution.split("x")[0]}')
+        options.add_argument(f'--height={args.resolution.split("x")[1]}')
+        options.add_argument('--start-fullscreen')
+    else:
+        options = Options()  
+        options.add_argument('--disable-infobars') 
+        options.add_argument('--no-sandbox') 
+        options.add_argument('--kiosk') 
+        options.add_argument('--window-size=%s' % args.resolution.replace('x', ','))
+        options.add_argument('--window-position=0,0')
+        options.add_experimental_option("excludeSwitches", ['enable-automation'])
+        options.add_experimental_option('prefs', {'intl.accept_languages':'{locale}'.format(locale='en_US.UTF-8')})
+        options.add_argument('--start-fullscreen') 
+        options.add_argument('--autoplay-policy=no-user-gesture-required')
+        # Enable Chrome logging for console and performance (network/websocket) events
+        options.add_argument('--enable-logging')
+        options.add_argument('--v=1')
+        options.set_capability('goog:loggingPrefs', {'browser': 'ALL', 'performance': 'ALL'})
+        options.set_capability('goog:chromeOptions', {
+            'perfLoggingPrefs': {
+                'enableNetwork': True,
+                'enablePage': True,
+            }
+        })
+        # If your BBB uses a self-signed or mismatched certificate, allow insecure certs to avoid blocked wss connections
+        options.add_argument('--ignore-certificate-errors')
+        options.add_argument('--allow-running-insecure-content')
+        options.set_capability('acceptInsecureCerts', True)
+        # Quirk for newer chromedriver versions
+        options.add_argument('--remote-allow-origins=*')
     if args.browser_disable_dev_shm_usage:
         options.add_argument('--disable-dev-shm-usage')
     else:
@@ -117,9 +162,60 @@ def set_up():
             )
             sys.exit(2)
 
-    logging.info('Starting browser!!')
+    logging.info('Starting browser!! (%s)', browser_choice)
 
-    browser = webdriver.Chrome(executable_path='./chromedriver',options=options)
+    if browser_choice == 'firefox':
+        from selenium.webdriver.firefox.service import Service as FirefoxService
+        service = FirefoxService(executable_path='/usr/local/bin/geckodriver', log_output=os.path.join(LOG_DIR, 'geckodriver.log'))
+        # Use system Firefox (installed via apt)
+        browser = webdriver.Firefox(service=service, options=options)
+    else:
+        # Use Chrome for Testing binary and matching chromedriver
+        options.binary_location = '/opt/chrome-linux64/chrome'
+        service = Service(executable_path='./chromedriver', log_output=os.path.join(LOG_DIR, 'chromedriver.log'))
+        browser = webdriver.Chrome(service=service, options=options)
+    start_browser_log_capture(browser, LOG_DIR)
+
+def start_browser_log_capture(driver, log_dir):
+    """Continuously capture browser console and performance logs to files."""
+    console_path = os.path.join(log_dir, 'browser-console.log')
+    perf_path = os.path.join(log_dir, 'browser-performance.jsonl')
+
+    def _writer_loop():
+        while True:
+            try:
+                # Console logs
+                try:
+                    entries = driver.get_log('browser')
+                    if entries:
+                        with open(console_path, 'a', encoding='utf-8') as f:
+                            for e in entries:
+                                ts = e.get('timestamp')
+                                level = e.get('level')
+                                msg = e.get('message')
+                                f.write(f"{ts} {level} {msg}\n")
+                except Exception as e:
+                    logging.debug('Error reading browser console logs: %s', e)
+
+                # Performance logs (network/websocket)
+                try:
+                    entries = driver.get_log('performance')
+                    if entries:
+                        with open(perf_path, 'a', encoding='utf-8') as f:
+                            for e in entries:
+                                try:
+                                    # e['message'] is a JSON string of a devtools protocol event
+                                    f.write(e['message'] + '\n')
+                                except Exception:
+                                    f.write(json.dumps(e) + '\n')
+                except Exception as e:
+                    logging.debug('Error reading performance logs: %s', e)
+            except Exception as e:
+                logging.debug('Error in log capture loop: %s', e)
+            time.sleep(2)
+
+    t = threading.Thread(target=_writer_loop, daemon=True)
+    t.start()
 
 def bbb_browser():
     global browser

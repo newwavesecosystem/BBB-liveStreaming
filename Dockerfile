@@ -1,11 +1,11 @@
 ARG FFMPEG_VERSION=4.2.2
 
-FROM ubuntu:bionic
+FROM ubuntu:20.04
 ARG FFMPEG_VERSION
 
 WORKDIR /usr/src/app
 
-RUN apt-get update && apt-get install -y software-properties-common && apt-get update && add-apt-repository ppa:jonathonf/ffmpeg-4
+RUN apt-get update && apt-get install -y software-properties-common && apt-get update
 
 RUN ln -s -f /bin/true /usr/bin/chfn \
     && apt-get update && apt-get install -y \
@@ -36,15 +36,42 @@ RUN pip install --no-cache-dir -r py_requirements.txt
 
 
 RUN apt-get update && \
-    apt-get install -y gnupg wget curl unzip --no-install-recommends && \
-    wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
-    echo "deb http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list && \
-    apt-get update -y && \
-    apt-get install -y google-chrome-stable && \
-    CHROMEVER=$(google-chrome --product-version | grep -o "[^\.]*\.[^\.]*\.[^\.]*") && \
-    DRIVERVER=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROMEVER") && \
-    wget -q --continue "http://chromedriver.storage.googleapis.com/$DRIVERVER/chromedriver_linux64.zip" && \
-    unzip chromedriver* && \
+    apt-get install -y wget curl unzip --no-install-recommends && \
+    # Try primary CfT JSON endpoint; fallback to text endpoint if unavailable
+    if curl -fsSL https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json -o /tmp/cft.json; then \
+      python3 -c "import json; d=json.load(open('/tmp/cft.json')); s=d['channels']['Stable']; print([u['url'] for u in s['downloads']['chrome'] if u['platform']=='linux64'][0], [u['url'] for u in s['downloads']['chromedriver'] if u['platform']=='linux64'][0])" | tee /tmp/cft_urls.txt; \
+      CHROME_URL=$(awk '{print $1}' /tmp/cft_urls.txt); \
+      DRIVER_URL=$(awk '{print $2}' /tmp/cft_urls.txt); \
+    else \
+      CHROME_VER=$(curl -fsSL https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_STABLE); \
+      CHROME_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VER}/linux64/chrome-linux64.zip"; \
+      DRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VER}/linux64/chromedriver-linux64.zip"; \
+    fi && \
+    wget -q -O /tmp/chrome-linux64.zip "$CHROME_URL" && \
+    wget -q -O /tmp/chromedriver-linux64.zip "$DRIVER_URL" && \
+    unzip -o /tmp/chrome-linux64.zip -d /opt && \
+    unzip -o /tmp/chromedriver-linux64.zip -d /usr/src/app && \
+    ln -sf /opt/chrome-linux64/chrome /usr/bin/google-chrome && \
+    ln -sf /usr/src/app/chromedriver-linux64/chromedriver /usr/src/app/chromedriver && \
+    chmod +x /usr/src/app/chromedriver && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      libnss3 libnspr4 libxss1 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+      libdrm2 libgbm1 libgtk-3-0 libxdamage1 libxext6 libxfixes3 \
+      libxcomposite1 libxrandr2 libxrender1 libxcb1 libx11-6 \
+      libpangocairo-1.0-0 libpango-1.0-0 libcurl4 ca-certificates fonts-liberation xdg-utils \
+      firefox libdbus-glib-1-2 && \
+    # Install geckodriver (latest), with fallback to a pinned version
+    if curl -fsSL https://api.github.com/repos/mozilla/geckodriver/releases/latest -o /tmp/gecko.json; then \
+      GECKO_URL=$(python3 -c "import json,sys; d=json.load(open('/tmp/gecko.json')); urls=[a.get('browser_download_url','') for a in d.get('assets',[]) if 'linux64' in a.get('browser_download_url','') and a.get('browser_download_url','').endswith('.tar.gz')]; print(urls[0] if urls else sys.exit(1))"); \
+    else \
+      GECKO_URL="https://github.com/mozilla/geckodriver/releases/download/v0.34.0/geckodriver-v0.34.0-linux64.tar.gz"; \
+    fi && \
+    wget -q -O /tmp/geckodriver.tgz "$GECKO_URL" && \
+    tar -xzf /tmp/geckodriver.tgz -C /usr/local/bin && \
+    chmod +x /usr/local/bin/geckodriver && \
+    google-chrome --version && /usr/src/app/chromedriver --version && \
+    firefox --version && geckodriver --version && \
     pwd && ls
 
 ENV BBB_RESOLUTION 1920x1080
@@ -64,6 +91,11 @@ COPY chat.py ./
 COPY startStream.sh ./
 COPY docker-entrypoint.sh ./
 COPY nsswrapper.sh ./
+
+# Ensure logs directory exists and is writable by the app user
+RUN mkdir -p /usr/src/app/logs && \
+    chown -R 1001:0 /usr/src/app/logs && \
+    chmod -R g=u /usr/src/app/logs
 
 ENTRYPOINT ["sh","docker-entrypoint.sh"]
 

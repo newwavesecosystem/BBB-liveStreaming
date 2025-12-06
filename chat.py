@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import sys, argparse, time, subprocess, logging, os, redis
+import sys, argparse, time, subprocess, logging, os, redis, threading, json
 from bigbluebutton_api_python import BigBlueButton
 from bigbluebutton_api_python import util as bbbUtil 
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
@@ -14,7 +15,18 @@ browser = None
 selenium_timeout = 30
 connect_timeout = 5
 
-logging.basicConfig(level=os.environ.get("LOGLEVEL", "INFO"))
+# Configure logging to console and file
+log_level = os.environ.get('LOGLEVEL', 'INFO')
+logging.basicConfig(level=log_level)
+LOG_DIR = os.environ.get('BBB_LOG_DIR', os.path.join(os.getcwd(), 'logs'))
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except PermissionError:
+    LOG_DIR = '/tmp/logs'
+    os.makedirs(LOG_DIR, exist_ok=True)
+_fh = logging.FileHandler(os.path.join(LOG_DIR, 'chat-app.log'))
+_fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+logging.getLogger().addHandler(_fh)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-s","--server", help="Big Blue Button Server URL")
@@ -27,6 +39,7 @@ parser.add_argument("-T","--meetingTitle", help="meeting title (required to crea
 parser.add_argument("-u","--user", help="Name to join the meeting",default="Live")
 parser.add_argument("-r","--redis", help="Redis hostname",default="redis")
 parser.add_argument("-c","--channel", help="Redis channel",default="chat")
+parser.add_argument("--browser", help="Browser to use: chrome or firefox", default=os.environ.get('BROWSER', 'chrome'))
 parser.add_argument(
    '--browser-disable-dev-shm-usage', action='store_true', default=False,
    help='do not use /dev/shm',
@@ -38,16 +51,42 @@ bbbUB = bbbUtil.UrlBuilder(args.server,args.secret)
 
 def set_up():
     global browser
-
-    options = Options()
-    options.add_argument('--disable-infobars')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--kiosk')
-    options.add_argument('--window-size=1280,720')  # we do not need a big window for the chat
-    options.add_argument('--window-position=0,0')
-    options.add_experimental_option("excludeSwitches", ['enable-automation'])
-    options.add_argument('--incognito')
-    options.add_argument('--start-fullscreen')
+    browser_choice = (args.browser or 'chrome').lower()
+    if browser_choice == 'firefox':
+        from selenium.webdriver.firefox.options import Options as FirefoxOptions
+        options = FirefoxOptions()
+        options.set_preference('intl.accept_languages', 'en-US,en')
+        options.set_preference('security.certerrors.permanentOverride', True)
+        options.set_preference('security.enterprise_roots.enabled', True)
+        options.set_preference('security.mixed_content.block_active_content', False)
+        options.set_capability('acceptInsecureCerts', True)
+        options.add_argument('--kiosk')
+        options.add_argument('--start-fullscreen')
+    else:
+        options = Options()
+        options.add_argument('--disable-infobars')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--kiosk')
+        options.add_argument('--window-size=1280,720')  # we do not need a big window for the chat
+        options.add_argument('--window-position=0,0')
+        options.add_experimental_option("excludeSwitches", ['enable-automation'])
+        options.add_argument('--incognito')
+        options.add_argument('--start-fullscreen')
+        # Enable Chrome logging for console and performance (network/websocket) events
+        options.add_argument('--enable-logging')
+        options.add_argument('--v=1')
+        options.set_capability('goog:loggingPrefs', {'browser': 'ALL', 'performance': 'ALL'})
+        options.set_capability('goog:chromeOptions', {
+            'perfLoggingPrefs': {
+                'enableNetwork': True,
+                'enablePage': True,
+            }
+        })
+        # Allow insecure certs if BBB uses self-signed or mismatched cert to avoid blocked wss
+        options.add_argument('--ignore-certificate-errors')
+        options.add_argument('--allow-running-insecure-content')
+        options.set_capability('acceptInsecureCerts', True)
+        options.add_argument('--remote-allow-origins=*')
     if args.browser_disable_dev_shm_usage:
         options.add_argument('--disable-dev-shm-usage')
     else:
@@ -62,9 +101,18 @@ def set_up():
             )
             sys.exit(2)
 
-    logging.info('Starting browser to chat!!')
+    logging.info('Starting browser to chat!! (%s)', browser_choice)
 
-    browser = webdriver.Chrome(executable_path='./chromedriver',options=options)
+    if browser_choice == 'firefox':
+        from selenium.webdriver.firefox.service import Service as FirefoxService
+        service = FirefoxService(executable_path='/usr/local/bin/geckodriver', log_output=os.path.join(LOG_DIR, 'geckodriver-chat.log'))
+        browser = webdriver.Firefox(service=service, options=options)
+    else:
+        # Use Chrome for Testing binary and matching chromedriver
+        options.binary_location = '/opt/chrome-linux64/chrome'
+        service = Service(executable_path='./chromedriver', log_output=os.path.join(LOG_DIR, 'chromedriver-chat.log'))
+        browser = webdriver.Chrome(service=service, options=options)
+    start_browser_log_capture(browser, LOG_DIR)
 
 def bbb_browser():
     global browser
@@ -128,6 +176,46 @@ def get_join_url():
 def chat():
     while True:
         time.sleep(60)
+
+def start_browser_log_capture(driver, log_dir):
+    """Continuously capture browser console and performance logs to files."""
+    console_path = os.path.join(log_dir, 'chat-browser-console.log')
+    perf_path = os.path.join(log_dir, 'chat-browser-performance.jsonl')
+
+    def _writer_loop():
+        while True:
+            try:
+                # Console logs
+                try:
+                    entries = driver.get_log('browser')
+                    if entries:
+                        with open(console_path, 'a', encoding='utf-8') as f:
+                            for e in entries:
+                                ts = e.get('timestamp')
+                                level = e.get('level')
+                                msg = e.get('message')
+                                f.write(f"{ts} {level} {msg}\n")
+                except Exception as e:
+                    logging.debug('Error reading chat browser console logs: %s', e)
+
+                # Performance logs (network/websocket)
+                try:
+                    entries = driver.get_log('performance')
+                    if entries:
+                        with open(perf_path, 'a', encoding='utf-8') as f:
+                            for e in entries:
+                                try:
+                                    f.write(e['message'] + '\n')
+                                except Exception:
+                                    f.write(json.dumps(e) + '\n')
+                except Exception as e:
+                    logging.debug('Error reading chat performance logs: %s', e)
+            except Exception as e:
+                logging.debug('Error in chat log capture loop: %s', e)
+            time.sleep(2)
+
+    t = threading.Thread(target=_writer_loop, daemon=True)
+    t.start()
 
 
 while bbb.is_meeting_running(args.id).is_meeting_running() != True:
