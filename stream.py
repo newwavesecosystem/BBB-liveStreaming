@@ -10,6 +10,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.keys import Keys  
 from selenium.common.exceptions import JavascriptException
 from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.chrome.options import Options  
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -52,6 +53,7 @@ parser.add_argument("-M","--moderatorPassword", help="moderator password (requir
 parser.add_argument("-T","--meetingTitle", help="meeting title (required to create a meeting)")
 parser.add_argument("-u","--user", help="Name to join the meeting",default="Live")
 parser.add_argument("-t","--target", help="RTMP Streaming URL")
+parser.add_argument("--target2", help="Second RTMP Streaming URL", default=os.environ.get('BBB_STREAM_URL_2'))
 parser.add_argument("--browser", help="Browser to use: chrome or firefox", default=os.environ.get('BROWSER', 'chrome'))
 parser.add_argument("--chatUrl", help="Streaming URL to display in the chat", default=False)
 parser.add_argument("--chatMsg", nargs='+', help="Message to display in the chat before Streaming URL", default=False)
@@ -236,6 +238,19 @@ def bbb_browser():
         # Wait for the input element to appear
         logging.info("Waiting for chat input window to appear.")
         logging.info("No need to wait. Continue jare")
+        # Some BBB skins show an audio permission modal; most do not when auto-join flags are set.
+        # Try briefly; if it doesn't appear, continue.
+        try:
+            element = EC.visibility_of_element_located((By.ID, "audio-permission-modal"))
+            modal = WebDriverWait(browser, 5).until(element)
+            try:
+                start_button = browser.find_element(By.ID, "start-audio-button")
+                start_button.click()
+                logging.info("Clicked start audio button.")
+            except NoSuchElementException:
+                logging.info("Start audio button not found inside modal; continuing.")
+        except TimeoutException:
+            logging.info("Audio permission modal not found quickly; proceeding with auto-join settings.")
 #         element = EC.presence_of_element_located((By.ID, 'message-input'))
 #         WebDriverWait(browser, selenium_timeout).until(element)
 
@@ -311,8 +326,11 @@ def stream_intro():
     introEnd = ""
     if args.endIntroAt:
         introEnd = "-to %s"%(args.endIntroAt)
-    ffmpeg_stream = 'ffmpeg -re %s %s -thread_queue_size "%s" -i %s -thread_queue_size %s -f pulse -i default -ac 2 %s -f flv "%s"' % (
-        introBegin, introEnd, args.ffmpeg_input_thread_queue_size, args.intro, args.ffmpeg_input_thread_queue_size, args.ffmpeg_stream_options, args.target
+    outputs = '-f flv "%s"' % (args.target)
+    if args.target2:
+        outputs += ' -f flv "%s"' % (args.target2)
+    ffmpeg_stream = 'ffmpeg -re %s %s -thread_queue_size "%s" -i %s -thread_queue_size %s -f pulse -i default -ac 2 %s %s' % (
+        introBegin, introEnd, args.ffmpeg_input_thread_queue_size, args.intro, args.ffmpeg_input_thread_queue_size, args.ffmpeg_stream_options, outputs
     )
     logging.debug('Preparing to execute %r' % ffmpeg_stream)
     ffmpeg_args = shlex.split(ffmpeg_stream)
@@ -320,8 +338,11 @@ def stream_intro():
     p = subprocess.call(ffmpeg_args)
 
 def stream():
-    ffmpeg_stream = 'ffmpeg -thread_queue_size "%s" -f x11grab -draw_mouse 0 -s %s  -i :%d -thread_queue_size "%s" -f pulse -i default -ac 2 %s -f flv -flvflags no_duration_filesize "%s"' % (
-        args.ffmpeg_input_thread_queue_size, args.resolution, 122, args.ffmpeg_input_thread_queue_size, args.ffmpeg_stream_options, args.target)
+    outputs = '-f flv -flvflags no_duration_filesize "%s"' % (args.target)
+    if args.target2:
+        outputs += ' -f flv -flvflags no_duration_filesize "%s"' % (args.target2)
+    ffmpeg_stream = 'ffmpeg -thread_queue_size "%s" -f x11grab -draw_mouse 0 -s %s  -i :%d -thread_queue_size "%s" -f pulse -i default -ac 2 %s %s' % (
+        args.ffmpeg_input_thread_queue_size, args.resolution, 122, args.ffmpeg_input_thread_queue_size, args.ffmpeg_stream_options, outputs)
     logging.debug('Preparing to execute %r' % ffmpeg_stream)
     ffmpeg_args = shlex.split(ffmpeg_stream)
     logging.info("streaming meeting...")
