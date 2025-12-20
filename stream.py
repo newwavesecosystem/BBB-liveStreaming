@@ -118,13 +118,22 @@ def set_up():
         options.set_preference('security.certerrors.permanentOverride', True)
         options.set_preference('security.enterprise_roots.enabled', True)
         options.set_preference('security.mixed_content.block_active_content', False)
+        # Autoplay and media permissions: allow audio/video without gesture and auto-grant getUserMedia
+        options.set_preference('media.autoplay.default', 0)  # 0=allow, 1=block audible, 5=allowed/blocked by site
+        options.set_preference('media.autoplay.blocking_policy', 0)
+        options.set_preference('media.autoplay.enabled', True)
+        options.set_preference('media.navigator.permission.disabled', True)
+        options.set_preference('media.navigator.streams.fake', True)
+        options.set_preference('permissions.default.microphone', 1)  # 1=allow
+        options.set_preference('permissions.default.camera', 1)      # 1=allow
+        options.set_preference('media.peerconnection.enabled', True)
         options.set_capability('acceptInsecureCerts', True)
         options.add_argument('--kiosk')
         options.add_argument(f'--width={args.resolution.split("x")[0]}')
         options.add_argument(f'--height={args.resolution.split("x")[1]}')
         options.add_argument('--start-fullscreen')
     else:
-        options = Options()  
+        options = Options  ()  
         options.add_argument('--disable-infobars') 
         options.add_argument('--no-sandbox') 
         options.add_argument('--kiosk') 
@@ -134,6 +143,8 @@ def set_up():
         options.add_experimental_option('prefs', {'intl.accept_languages':'{locale}'.format(locale='en_US.UTF-8')})
         options.add_argument('--start-fullscreen') 
         options.add_argument('--autoplay-policy=no-user-gesture-required')
+        # Auto-accept getUserMedia prompts for microphone/camera
+        options.add_argument('--use-fake-ui-for-media-stream')
         # Enable Chrome logging for console and performance (network/websocket) events
         options.add_argument('--enable-logging')
         options.add_argument('--v=1')
@@ -311,11 +322,12 @@ def get_join_url():
     joinParams['meetingID'] = args.id
     joinParams['fullName'] = args.user
     joinParams['password'] = pwd
-    joinParams['userdata-bbb_auto_join_audio'] = "true" 
-    joinParams['userdata-bbb_enable_video'] = 'true' 
-    joinParams['userdata-bbb_listen_only_mode'] = "true" 
-    joinParams['userdata-bbb_force_listen_only'] = "true" 
-    joinParams['userdata-bbb_skip_check_audio'] = 'true' 
+    # joinParams['userdata-bbb_auto_join_audio'] = "true" 
+    # joinParams['userdata-bbb_enable_video'] = 'true' 
+    # joinParams['userdata-bbb_listen_only_mode'] = "true" 
+    # joinParams['userdata-bbb_force_listen_only'] = "true" 
+    # joinParams['userdata-bbb_skip_check_audio'] = 'true' 
+    joinParams['userdata-samji_audio_no_mic'] = 'true' 
     joinParams['joinViaHtml5'] = 'true'
     return bbbUB.buildUrl("join", params=joinParams) 
 
@@ -379,3 +391,4 @@ if downloadProcess:
     downloadProcess.communicate(input=None)
 if browser:
     browser.quit()
+

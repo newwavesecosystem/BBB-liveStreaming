@@ -33,6 +33,10 @@ services:
       - BBB_STREAM_URL_2=rtmp://media_server_url/stream/stream_key_2
       # Resolution to be streamed/downloaded in format WxH (default 1920x1080)
       - BBB_RESOLUTION=1920x1080
+      # Chrome for Testing channel: stable (default), dev, beta, canary
+      - CHROME_CHANNEL=dev
+      # Optional browser selection: chrome (default), firefox, or edge
+      - BROWSER=edge
       # stream video bitrate
       - FFMPEG_STREAM_VIDEO_BITRATE=4000
       # threads used for stream (0=auto)

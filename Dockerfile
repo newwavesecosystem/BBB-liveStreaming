@@ -1,7 +1,9 @@
 ARG FFMPEG_VERSION=4.2.2
+ARG CHROME_CHANNEL=stable
 
 FROM ubuntu:20.04
 ARG FFMPEG_VERSION
+ENV CHROME_CHANNEL=${CHROME_CHANNEL}
 
 WORKDIR /usr/src/app
 
@@ -37,13 +39,22 @@ RUN pip install --no-cache-dir -r py_requirements.txt
 
 RUN apt-get update && \
     apt-get install -y wget curl unzip --no-install-recommends && \
+    # Determine desired Chrome channel (Stable, Beta, Dev, Canary)
+    case "$CHROME_CHANNEL" in \
+      stable|Stable) CHAN_KEY=Stable;; \
+      beta|Beta) CHAN_KEY=Beta;; \
+      dev|Dev) CHAN_KEY=Dev;; \
+      canary|Canary) CHAN_KEY=Canary;; \
+      *) CHAN_KEY=Stable;; \
+    esac && \
     # Try primary CfT JSON endpoint; fallback to text endpoint if unavailable
     if curl -fsSL https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json -o /tmp/cft.json; then \
-      python3 -c "import json; d=json.load(open('/tmp/cft.json')); s=d['channels']['Stable']; print([u['url'] for u in s['downloads']['chrome'] if u['platform']=='linux64'][0], [u['url'] for u in s['downloads']['chromedriver'] if u['platform']=='linux64'][0])" | tee /tmp/cft_urls.txt; \
+      python3 -c "import json; chan='${CHAN_KEY}'; d=json.load(open('/tmp/cft.json')); s=d['channels'][chan]; print([u['url'] for u in s['downloads']['chrome'] if u['platform']=='linux64'][0], [u['url'] for u in s['downloads']['chromedriver'] if u['platform']=='linux64'][0])" | tee /tmp/cft_urls.txt; \
       CHROME_URL=$(awk '{print $1}' /tmp/cft_urls.txt); \
       DRIVER_URL=$(awk '{print $2}' /tmp/cft_urls.txt); \
     else \
-      CHROME_VER=$(curl -fsSL https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_STABLE); \
+      CHAN_API=$(printf "%s" "$CHAN_KEY" | tr '[:lower:]' '[:upper:]'); \
+      CHROME_VER=$(curl -fsSL https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHAN_API}); \
       CHROME_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VER}/linux64/chrome-linux64.zip"; \
       DRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VER}/linux64/chromedriver-linux64.zip"; \
     fi && \

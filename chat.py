@@ -39,7 +39,7 @@ parser.add_argument("-T","--meetingTitle", help="meeting title (required to crea
 parser.add_argument("-u","--user", help="Name to join the meeting",default="Live")
 parser.add_argument("-r","--redis", help="Redis hostname",default="redis")
 parser.add_argument("-c","--channel", help="Redis channel",default="chat")
-parser.add_argument("--browser", help="Browser to use: chrome or firefox", default=os.environ.get('BROWSER', 'chrome'))
+parser.add_argument("--browser", help="Browser to use: chrome, firefox, or edge", default=os.environ.get('BROWSER', 'chrome'))
 parser.add_argument(
    '--browser-disable-dev-shm-usage', action='store_true', default=False,
    help='do not use /dev/shm',
@@ -59,9 +59,33 @@ def set_up():
         options.set_preference('security.certerrors.permanentOverride', True)
         options.set_preference('security.enterprise_roots.enabled', True)
         options.set_preference('security.mixed_content.block_active_content', False)
+        # Autoplay and media permissions for chat window as well
+        options.set_preference('media.autoplay.default', 0)
+        options.set_preference('media.autoplay.blocking_policy', 0)
+        options.set_preference('media.autoplay.enabled', True)
+        options.set_preference('media.navigator.permission.disabled', True)
+        options.set_preference('media.navigator.streams.fake', True)
+        options.set_preference('permissions.default.microphone', 1)  # 1=allow
+        options.set_preference('permissions.default.camera', 1)      # 1=allow
+        options.set_preference('media.peerconnection.enabled', True)
         options.set_capability('acceptInsecureCerts', True)
         options.add_argument('--kiosk')
         options.add_argument('--start-fullscreen')
+    elif browser_choice == 'edge':
+        from selenium.webdriver.edge.options import Options as EdgeOptions
+        options = EdgeOptions()
+        options.use_chromium = True
+        options.add_argument('--disable-infobars')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--kiosk')
+        options.add_argument('--start-fullscreen')
+        options.add_argument('--ignore-certificate-errors')
+        options.add_argument('--allow-running-insecure-content')
+        options.set_capability('acceptInsecureCerts', True)
+        options.add_argument('--window-size=1280,720')
+        options.add_argument('--window-position=0,0')
+        options.add_argument('--incognito')
+        options.binary_location = '/usr/bin/microsoft-edge'
     else:
         options = Options()
         options.add_argument('--disable-infobars')
@@ -72,6 +96,7 @@ def set_up():
         options.add_experimental_option("excludeSwitches", ['enable-automation'])
         options.add_argument('--incognito')
         options.add_argument('--start-fullscreen')
+        options.add_argument('--use-fake-ui-for-media-stream')
         # Enable Chrome logging for console and performance (network/websocket) events
         options.add_argument('--enable-logging')
         options.add_argument('--v=1')
@@ -107,6 +132,10 @@ def set_up():
         from selenium.webdriver.firefox.service import Service as FirefoxService
         service = FirefoxService(executable_path='/usr/local/bin/geckodriver', log_output=os.path.join(LOG_DIR, 'geckodriver-chat.log'))
         browser = webdriver.Firefox(service=service, options=options)
+    elif browser_choice == 'edge':
+        from selenium.webdriver.edge.service import Service as EdgeService
+        service = EdgeService(executable_path='/usr/local/bin/msedgedriver', log_output=os.path.join(LOG_DIR, 'msedgedriver-chat.log'))
+        browser = webdriver.Edge(service=service, options=options)
     else:
         # Use Chrome for Testing binary and matching chromedriver
         options.binary_location = '/opt/chrome-linux64/chrome'
@@ -224,3 +253,4 @@ set_up()
 bbb_browser()
 chat()
 browser.quit()
+
